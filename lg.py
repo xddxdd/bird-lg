@@ -22,15 +22,14 @@
 
 import base64
 from datetime import datetime
-import memcache
 import subprocess
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import re
-from urllib2 import urlopen
 from urllib import quote, unquote
 import json
 import random
+import grequests
 
 from toolbox import mask_is_valid, ipv6_is_valid, ipv4_is_valid, resolve, save_cache_pickle, load_cache_pickle, unescape
 #from xml.sax.saxutils import escape
@@ -47,10 +46,6 @@ app.debug = app.config["DEBUG"]
 file_handler = TimedRotatingFileHandler(filename=app.config["LOG_FILE"], when="midnight")
 file_handler.setLevel(getattr(logging, app.config["LOG_LEVEL"].upper()))
 app.logger.addHandler(file_handler)
-
-memcache_server = app.config.get("MEMCACHE_SERVER", "127.0.0.1:11211")
-memcache_expiration = int(app.config.get("MEMCACHE_EXPIRATION", "1296000")) # 15 days by default
-mc = memcache.Client([memcache_server])
 
 def get_asn_from_as(n):
     asn_zone = app.config.get("ASN_ZONE", "asn.cymru.com")
@@ -117,19 +112,9 @@ def whois_command(query):
     return subprocess.Popen(['whois'] + server + [query], stdout=subprocess.PIPE).communicate()[0].decode('utf-8', 'ignore')
 
 
-def bird_command(host, proto, query):
-    """Alias to bird_proxy for bird service"""
-    return bird_proxy(host, proto, "bird", query)
-
-
-def bird_proxy(host, proto, service, query):
-    """Retreive data of a service from a running lgproxy on a remote node
-
-    First and second arguments are the node and the port of the running lgproxy
-    Third argument is the service, can be "traceroute" or "bird"
-    Last argument, the query to pass to the service
-
-    return tuple with the success of the command and the returned data
+def bird_url(host, proto, service, query):
+    """
+    Retreive URL to query needed information
     """
 
     path = ""
@@ -141,19 +126,11 @@ def bird_proxy(host, proto, service, query):
     port = app.config["PROXY"].get(host, "")
 
     if not port:
-        return False, 'Host "%s" invalid' % host
+        return None
     elif not path:
-        return False, 'Proto "%s" invalid' % proto
+        return None
     else:
-        url = "http://%s.%s:%d/%s?q=%s" % (host, app.config["DOMAIN"], port, path, quote(query))
-        try:
-            f = urlopen(url)
-            resultat = f.read()
-            status = True                # retreive remote status
-        except IOError:
-            resultat = "Failed retreive url: %s" % url
-            status = False
-        return status, resultat
+        return "http://%s.%s:%d/%s?q=%s" % (host, app.config["DOMAIN"], port, path, quote(query))
 
 
 @app.context_processor
@@ -235,13 +212,19 @@ def summary(hosts, proto="ipv4"):
 
     summary = {}
     errors = []
-    for host in hosts.split("+"):
-        ret, res = bird_command(host, proto, command)
-        res = res.split("\n")
 
-        if ret is False:
-            errors.append("%s" % res)
+    hosts_l = hosts.split("+")
+    reqs = [grequests.get(bird_url(host, proto, "bird", command)) for host in hosts.split("+")]
+    rets = grequests.map(reqs)
+
+    for i in range(len(hosts_l)):
+        host = hosts_l[i]
+
+        if not rets[i]:
+            errors.append("%s: request failed" % host)
             continue
+
+        res = rets[i].text.split("\n")
 
         if len(res) <= 1:
             errors.append("%s: bird command failed with error, %s" % (host, "\n".join(res)))
@@ -274,13 +257,19 @@ def detail(hosts, proto):
 
     detail = {}
     errors = []
-    for host in hosts.split("+"):
-        ret, res = bird_command(host, proto, command)
-        res = res.split("\n")
 
-        if ret is False:
-            errors.append("%s" % res)
+    hosts_l = hosts.split("+")
+    reqs = [grequests.get(bird_url(host, proto, "bird", command)) for host in hosts.split("+")]
+    rets = grequests.map(reqs)
+
+    for i in range(len(hosts_l)):
+        host = hosts_l[i]
+
+        if not rets[i]:
+            errors.append("%s: request failed" % host)
             continue
+
+        res = rets[i].text.split("\n")
 
         if len(res) <= 1:
             errors.append("%s: bird command failed with error, %s" % (host, "\n".join(res)))
@@ -313,14 +302,25 @@ def traceroute(hosts, proto):
 
     errors = []
     infos = {}
-    for host in hosts.split("+"):
-        status, resultat = bird_proxy(host, proto, "traceroute", q)
-        if status is False:
-            errors.append("%s" % resultat)
+
+    hosts_l = hosts.split("+")
+    reqs = [grequests.get(bird_url(host, proto, "traceroute", q)) for host in hosts.split("+")]
+    rets = grequests.map(reqs)
+
+    for i in range(len(hosts_l)):
+        host = hosts_l[i]
+
+        if not rets[i]:
+            errors.append("%s: request failed" % host)
             continue
 
+        res = rets[i].text.split("\n")
 
-        infos[host] = add_links(resultat)
+        if len(res) <= 1:
+            errors.append("%s: traceroute command failed with error, %s" % (host, "\n".join(res)))
+            continue
+
+        infos[host] = add_links(res)
     return render_template('traceroute.html', infos=infos, errors=errors)
 
 
@@ -376,17 +376,19 @@ def get_as_name(_as):
     if not _as.isdigit():
         return _as.strip()
 
-    name = mc.get(str('lg_%s' % _as))
-    if not name:
-        app.logger.info("asn for as %s not found in memcache", _as)
-        name = get_asn_from_as(_as)[-1].replace(" ","\r",1)
-        if name:
-            mc.set(str("lg_%s" % _as), str(name), memcache_expiration)
+    name = get_asn_from_as(_as)[-1].replace(" ","\r",1)
     return "AS%s | %s" % (_as, name)
 
 
 def get_as_number_from_protocol_name(host, proto, protocol):
-    ret, res = bird_command(host, proto, "show protocols all %s" % protocol)
+    reqs = [grequests.get(bird_url(host, proto, "bird", command))]
+    ret = grequests.map(reqs)[0]
+
+    if not ret:
+        errors.append("%s: request failed" % host)
+        return "?????"
+
+    res = ret.text
     re_asnumber = re.search("Neighbor AS:\s*(\d*)", res)
     if re_asnumber:
         return re_asnumber.group(1)
@@ -438,13 +440,13 @@ def show_bgpmap():
 
             label_without_star = kwargs["label"].replace("*", "")
             if e.get_label() is not None:
-                labels = e.get_label().split("\r") 
+                labels = e.get_label().split("\r")
             else:
                 return edges[edge_tuple]
             if "%s*" % label_without_star not in labels:
-                labels = [ kwargs["label"] ]  + [ l for l in labels if not l.startswith(label_without_star) ] 
+                labels = [ kwargs["label"] ]  + [ l for l in labels if not l.startswith(label_without_star) ]
                 labels = sorted(labels, cmp=lambda x,y: x.endswith("*") and -1 or 1)
-                
+
                 label = escape("\r".join(labels))
                 e.set_label(label)
         return edges[edge_tuple]
@@ -458,7 +460,7 @@ def show_bgpmap():
             edge = add_edge(as_number, nodes[host])
             edge.set_color("red")
             edge.set_style("bold")
-    
+
     #colors = [ "#009e23", "#1a6ec1" , "#d05701", "#6f879f", "#939a0e", "#0e9a93", "#9a0e85", "#56d8e1" ]
     previous_as = None
     hosts = data.keys()
@@ -478,14 +480,14 @@ def show_bgpmap():
                 if not hop:
                     hop = True
                     if _as not in hosts:
-                        hop_label = _as 
+                        hop_label = _as
                         if first:
                             hop_label = hop_label + "*"
                         continue
                     else:
                         hop_label = ""
 
-                
+
                 add_node(_as, fillcolor=(first and "#F5A9A9" or "white"))
                 if hop_label:
                     edge = add_edge(nodes[previous_as], nodes[_as], label=hop_label, fontsize="7")
@@ -558,7 +560,7 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
                 # ugly hack for good printing
                 path = [ peer_protocol_name ]
 #                path = ["%s\r%s" % (peer_protocol_name, get_as_name(get_as_number_from_protocol_name(host, proto, peer_protocol_name)))]
-        
+
         expr2 = re.search(r'(.*)unreachable\s+\[(\w+)\s+', line)
         if expr2:
             if path:
@@ -571,7 +573,7 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
 
         if line.startswith("BGP.as_path:"):
             path.extend(line.replace("BGP.as_path:", "").strip().split(" "))
-    
+
     if path:
         path.append(net_dest)
         paths.append(path)
@@ -628,13 +630,19 @@ def show_route(request_type, hosts, proto):
 
     detail = {}
     errors = []
-    for host in hosts.split("+"):
-        ret, res = bird_command(host, proto, command)
-        res = res.split("\n")
 
-        if ret is False:
-            errors.append("%s" % res)
+    hosts_l = hosts.split("+")
+    reqs = [grequests.get(bird_url(host, proto, "bird", command)) for host in hosts.split("+")]
+    rets = grequests.map(reqs)
+
+    for i in range(len(hosts_l)):
+        host = hosts_l[i]
+
+        if not rets[i]:
+            errors.append("%s: request failed" % host)
             continue
+
+        res = rets[i].text.split("\n")
 
         if len(res) <= 1:
             errors.append("%s: bird command failed with error, %s" % (host, "\n".join(res)))
