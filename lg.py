@@ -20,6 +20,9 @@
 #
 ###
 
+from gevent.monkey import patch_all
+patch_all()
+
 import base64
 from datetime import datetime
 import subprocess
@@ -36,8 +39,6 @@ import json
 import random
 
 import grequests
-from gevent.monkey import patch_all
-patch_all()
 
 from toolbox import mask_is_valid, ip_is_valid, ipv6_is_valid, ipv4_is_valid, resolve, resolve_any, save_cache_pickle, load_cache_pickle, unescape
 #from xml.sax.saxutils import escape
