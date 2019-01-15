@@ -31,7 +31,7 @@ import json
 import random
 import grequests
 
-from toolbox import mask_is_valid, ipv6_is_valid, ipv4_is_valid, resolve, save_cache_pickle, load_cache_pickle, unescape
+from toolbox import mask_is_valid, ip_is_valid, ipv6_is_valid, ipv4_is_valid, resolve, resolve_any, save_cache_pickle, load_cache_pickle, unescape
 #from xml.sax.saxutils import escape
 
 
@@ -48,19 +48,22 @@ file_handler.setLevel(getattr(logging, app.config["LOG_LEVEL"].upper()))
 app.logger.addHandler(file_handler)
 
 def get_asn_from_as(n):
-    asn_zone = app.config.get("ASN_ZONE", "asn.cymru.com")
-    try:
-        data = resolve("AS%s.%s" % (n, asn_zone) ,"TXT").replace("'","").replace('"','')
-    except:
-        return " "*5
-    return [ field.strip() for field in data.split("|") ]
-
+    asn_zone = app.config.get("ASN_ZONE", False)
+    # don't generate spurious (and potentially slow) lookups if ASN_ZONE not defined in config
+    if asn_zone:
+        try:
+            data = resolve("AS%s.%s" % (n, asn_zone) ,"TXT").replace("'","").replace('"','')
+        except:
+            return False
+        return [ field.strip() for field in data.split("|") ]
+    else:
+        return False
 
 def add_links(text):
     """Browser a string and replace ipv4, ipv6, as number, with a
     whois link """
 
-    if type(text) in [str, unicode]:
+    if type(text) in [str, str]:
         text = text.split("\n")
 
     ret_text = []
@@ -123,7 +126,7 @@ def bird_url(host, proto, service, query):
     elif proto == "ipv4":
         path = service
 
-    port = app.config["PROXY"].get(host, "")
+    proxyHost = app.config["PROXY"].get(host, "")
 
     if not port:
         return None
@@ -156,12 +159,12 @@ def inject_commands():
 
 @app.context_processor
 def inject_all_host():
-    return dict(all_hosts="+".join(app.config["PROXY"].keys()))
+    return dict(all_hosts="+".join(list(app.config["PROXY"].keys())))
 
 
 @app.route("/")
 def hello():
-    return redirect("/summary/%s/ipv4" % "+".join(app.config["PROXY"].keys()))
+    return redirect("/summary/%s/ipv4" % "+".join(list(app.config["PROXY"].keys())))
 
 
 def error_page(text):
@@ -200,8 +203,6 @@ def whois():
 
 
 SUMMARY_UNWANTED_PROTOS = ["Kernel", "Static", "Device"]
-SUMMARY_RE_MATCH = r"(?P<name>[\w_]+)\s+(?P<proto>\w+)\s+(?P<table>\w+)\s+(?P<state>\w+)\s+(?P<since>((|\d\d\d\d-\d\d-\d\d\s)|(\d\d:)\d\d:\d\d|\w\w\w\d\d))($|\s+(?P<info>.*))"
-
 
 @app.route("/summary/<hosts>")
 @app.route("/summary/<hosts>/<proto>")
@@ -234,9 +235,25 @@ def summary(hosts, proto="ipv4"):
         for line in res[1:]:
             line = line.strip()
             if line and (line.split() + [""])[1] not in SUMMARY_UNWANTED_PROTOS:
-                m = re.match(SUMMARY_RE_MATCH, line)
-                if m:
-                    data.append(m.groupdict())
+                split = line.split()
+                if len(split) >= 5:
+                    props = dict()
+                    props["name"] = split[0]
+                    props["proto"] = split[1]
+                    props["table"] = split[2]
+                    props["state"] = split[3]
+                    props["since"] = split[4]
+                    if len(split) > 5:
+                        # if bird is configured for 'timeformat protocol iso long'
+                        # then the 5th column contains the time, rather than info
+                        match =	re.match(r'\d\d:\d\d:\d\d', split[5])
+                        if match:
+                            props["info"] = ' '.join(split[6:]) if len(split) > 6 else ""
+                        else:
+                            props["info"] = ' '.join(split[5:])
+                    else:
+                        props["info"] = ""
+                    data.append(props)
                 else:
                     app.logger.warning("couldn't parse: %s", line)
 
@@ -289,16 +306,23 @@ def traceroute(hosts, proto):
 
     set_session("traceroute", hosts, proto, q)
 
-    if proto == "ipv6" and not ipv6_is_valid(q):
-        try:
-            q = resolve(q, "AAAA")
-        except:
-            return error_page("%s is unresolvable or invalid for %s" % (q, proto))
-    if proto == "ipv4" and not ipv4_is_valid(q):
-        try:
-            q = resolve(q, "A")
-        except:
-            return error_page("%s is unresolvable or invalid for %s" % (q, proto))
+    if app.config.get("UNIFIED_DAEMON", False):
+        if not ip_is_valid(q):
+            try:
+                q = resolve_any(q)
+            except:
+                return error_page("%s is unresolvable" % q)
+    else:
+        if proto == "ipv6" and not ipv6_is_valid(q):
+            try:
+                q = resolve(q, "AAAA")
+            except:
+                return error_page("%s is unresolvable or invalid for %s" % (q, proto))
+        if proto == "ipv4" and not ipv4_is_valid(q):
+            try:
+                q = resolve(q, "A")
+            except:
+                return error_page("%s is unresolvable or invalid for %s" % (q, proto))
 
     errors = []
     infos = {}
@@ -451,7 +475,7 @@ def show_bgpmap():
                 e.set_label(label)
         return edges[edge_tuple]
 
-    for host, asmaps in data.iteritems():
+    for host, asmaps in data.items():
         add_node(host, label= "%s\r%s" % (host.upper(), app.config["DOMAIN"].upper()), shape="box", fillcolor="#F5A9A9")
 
         as_number = app.config["AS_NUMBER"].get(host, None)
@@ -463,8 +487,8 @@ def show_bgpmap():
 
     #colors = [ "#009e23", "#1a6ec1" , "#d05701", "#6f879f", "#939a0e", "#0e9a93", "#9a0e85", "#56d8e1" ]
     previous_as = None
-    hosts = data.keys()
-    for host, asmaps in data.iteritems():
+    hosts = list(data.keys())
+    for host, asmaps in data.items():
         first = True
         for asmap in asmaps:
             previous_as = host
@@ -538,20 +562,22 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
     for line in text:
         line = line.strip()
 
-        expr = re.search(r'(.*)via\s+([0-9a-fA-F:\.]+)\s+on.*\[(\w+)\s+', line)
+        expr = re.search(r'(.*)unicast\s+\[(\w+)\s+', line)
         if expr:
+            if expr.group(1).strip():
+                net_dest = expr.group(1).strip()
+            peer_protocol_name = expr.group(2).strip()
+
+        expr2 = re.search(r'via\s+([0-9a-fA-F:\.]+)', line)
+        if expr2:
             if path:
                 path.append(net_dest)
                 paths.append(path)
                 path = None
 
-            if expr.group(1).strip():
-                net_dest = expr.group(1).strip()
-
-            peer_ip = expr.group(2).strip()
-            peer_protocol_name = expr.group(3).strip()
+            peer_ip = expr2.group(1).strip()
             # Check if via line is a internal route
-            for rt_host, rt_ips in app.config["ROUTER_IP"].iteritems():
+            for rt_host, rt_ips in app.config["ROUTER_IP"].items():
                 # Special case for internal routing
                 if peer_ip in rt_ips:
                     path = [rt_host]
@@ -561,15 +587,15 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
                 path = [ peer_protocol_name ]
 #                path = ["%s\r%s" % (peer_protocol_name, get_as_name(get_as_number_from_protocol_name(host, proto, peer_protocol_name)))]
 
-        expr2 = re.search(r'(.*)unreachable\s+\[(\w+)\s+', line)
-        if expr2:
+        expr3 = re.search(r'(.*)unreachable\s+\[(\w+)\s+', line)
+        if expr3:
             if path:
                 path.append(net_dest)
                 paths.append(path)
                 path = None
 
-            if expr2.group(1).strip():
-                net_dest = expr2.group(1).strip()
+            if expr3.group(1).strip():
+                net_dest = expr3.group(1).strip()
 
         if line.startswith("BGP.as_path:"):
             path.extend(line.replace("BGP.as_path:", "").strip().split(" "))
@@ -605,23 +631,37 @@ def show_route(request_type, hosts, proto):
         if len(expression.split("/")) == 2:
             expression, mask = (expression.split("/"))
 
-        if not mask and proto == "ipv4":
-            mask = "32"
-        if not mask and proto == "ipv6":
-            mask = "128"
-        if not mask_is_valid(mask):
-            return error_page("mask %s is invalid" % mask)
+        if app.config.get("UNIFIED_DAEMON", False):
+            if not ip_is_valid(expression):
+                try:
+                    expression = resolve_any(expression)
+                except:
+                    return error_page("%s is unresolvable" % expression)
 
-        if proto == "ipv6" and not ipv6_is_valid(expression):
-            try:
-                expression = resolve(expression, "AAAA")
-            except:
-                return error_page("%s is unresolvable or invalid for %s" % (expression, proto))
-        if proto == "ipv4" and not ipv4_is_valid(expression):
-            try:
-                expression = resolve(expression, "A")
-            except:
-                return error_page("%s is unresolvable or invalid for %s" % (expression, proto))
+            if not mask and ipv4_is_valid(expression):
+                mask = "32"
+            if not mask and ipv6_is_valid(expression):
+                mask = "128"
+            if not mask_is_valid(mask):
+                return error_page("mask %s is invalid" % mask)
+        else:
+            if not mask and proto == "ipv4":
+                mask = "32"
+            if not mask and proto == "ipv6":
+                mask = "128"
+            if not mask_is_valid(mask):
+                return error_page("mask %s is invalid" % mask)
+
+            if proto == "ipv6" and not ipv6_is_valid(expression):
+                try:
+                    expression = resolve(expression, "AAAA")
+                except:
+                    return error_page("%s is unresolvable or invalid for %s" % (expression, proto))
+            if proto == "ipv4" and not ipv4_is_valid(expression):
+                try:
+                    expression = resolve(expression, "A")
+                except:
+                    return error_page("%s is unresolvable or invalid for %s" % (expression, proto))
 
         if mask:
             expression += "/" + mask

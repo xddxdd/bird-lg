@@ -1,18 +1,17 @@
 {% extends "layout.html" %}
 {% block body %}
 {% for host in summary %}
-<h3 style="float:left">{{host}}: {{command}}</h3>
+<h3>{{host}}: {{command}}</h3>
 <table class="table table-striped table-bordered table-condensed table-summary">
 <thead>
-	<tr><th>Name</th><th>protocol</th><th>table</th><th>state</th><th>since</th><th>info</th></tr>
+	<tr><th>Name</th><th>protocol</th><th>state</th><th>since</th><th>info</th></tr>
 </thead>
 <tbody>
 	{% for row in summary[host] %}
 	<tr class="{{ loop.cycle('odd', 'even') }}">
         <td><a href="/detail/{{host}}/{{session.proto}}?q={{row.name}}">{{row.name}}</a></td>
         <td>{{row.proto}}</td>
-        <td>{{row.table}}</td>
-        <td><span class="label label-{% if row.state == "up" %}success{% elif row.state == "down" %}default{% else %}important{% endif %}">{{row.state}}</span></td>
+        <td><span class="badge badge-{% if row.state == "up" %}success{% elif row.state == "down" %}default{% elif row.state == "start" and row.info == "Passive" %}info{% else %}danger{% endif %}">{{row.state}}</span></td>
         <td>{{row.since}}</td>
         <td>{{row.info}}</td>
     </tr>

@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block body %}
 {% for host in detail %}
-<h3>{{host}}/{{session.proto}}: {{command}}</h3>
+<h3>{{host}}{% if not config.UNIFIED_DAEMON %}/{{session.proto}}{% endif %}: {{command}}</h3>
 <i>{{ detail[host].status }}</i><br /><br />
 <pre>
 {{ detail[host].description|trim|safe }}

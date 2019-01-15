@@ -31,6 +31,14 @@ resolv.lifetime = 1
 def resolve(n, q):
 	return str(resolv.query(n,q)[0])
 
+def resolve_any(h):
+    try:
+        return resolve(h, "AAAA")
+    except:
+        pass
+    return resolve(h, "A")
+
+
 def mask_is_valid(n):
 	if not n: 
 		return True
@@ -39,6 +47,9 @@ def mask_is_valid(n):
 		return ( mask >= 1 and mask <= 128)
 	except:
 		return False
+
+def ip_is_valid(n):
+    return ipv4_is_valid(n) or ipv6_is_valid(n)
 
 def ipv4_is_valid(n):
     try:
@@ -73,7 +84,7 @@ def load_cache_pickle(filename, default = None):
 
 def unescape(s):
     want_unicode = False
-    if isinstance(s, unicode):
+    if isinstance(s, str):
         s = s.encode("utf-8")
         want_unicode = True
 
@@ -95,5 +106,5 @@ def unescape(s):
     # join the extracted strings and return
     es = ""
     if want_unicode:
-        es = u""
+        es = ""
     return es.join(list)

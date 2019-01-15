@@ -25,7 +25,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from logging import FileHandler
 import subprocess
-from urllib import unquote
+from urllib.parse import unquote
 
 from bird import BirdSocket
 
@@ -41,7 +41,7 @@ app.logger.addHandler(file_handler)
 
 @app.before_request
 def access_log_before(*args, **kwargs):
-    app.logger.info("[%s] request %s, %s", request.remote_addr, request.url, "|".join(["%s:%s"%(k,v) for k,v in request.headers.items()]))
+    app.logger.info("[%s] request %s, %s", request.remote_addr, request.url, "|".join(["%s:%s"%(k,v) for k,v in list(request.headers.items())]))
 
 @app.after_request
 def access_log_after(response, *args, **kwargs):
@@ -66,14 +66,14 @@ def traceroute():
 
     src = []
     if request.path == '/traceroute6': 
-	traceroute = traceroute6
-	if app.config.get("IPV6_SOURCE",""):
-	     src = [ "-s",  app.config.get("IPV6_SOURCE") ]
+        traceroute = traceroute6
+        if app.config.get("IPV6_SOURCE",""):
+            src = [ "-s",  app.config.get("IPV6_SOURCE") ]
 
     else: 
-	traceroute = traceroute4
-	if app.config.get("IPV4_SOURCE",""):
-	     src = [ "-s",  app.config.get("IPV4_SOURCE") ]
+        traceroute = traceroute4
+        if app.config.get("IPV4_SOURCE",""):
+            src = [ "-s",  app.config.get("IPV4_SOURCE") ]
 
     query = request.args.get("q","")
     query = unquote(query)
