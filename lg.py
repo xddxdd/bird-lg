@@ -26,10 +26,18 @@ import subprocess
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import re
-from urllib import quote, unquote
+
+try:
+    from urllib.parse import quote, unquote
+except ImportError:
+    from urllib import quote, unquote
+
 import json
 import random
+
 import grequests
+from gevent.monkey import patch_all
+patch_all()
 
 from toolbox import mask_is_valid, ip_is_valid, ipv6_is_valid, ipv4_is_valid, resolve, resolve_any, save_cache_pickle, load_cache_pickle, unescape
 #from xml.sax.saxutils import escape
@@ -126,14 +134,14 @@ def bird_url(host, proto, service, query):
     elif proto == "ipv4":
         path = service
 
-    proxyHost = app.config["PROXY"].get(host, "")
+    port = app.config["PROXY"].get(host, "")
 
     if not port:
         return None
     elif not path:
         return None
     else:
-        return "http://%s.%s:%d/%s?q=%s" % (host, app.config["DOMAIN"], port, path, quote(query))
+        return "http://%s.%s:%s/%s?q=%s" % (host, app.config["DOMAIN"], port, path, quote(query))
 
 
 @app.context_processor
@@ -215,7 +223,7 @@ def summary(hosts, proto="ipv4"):
     errors = []
 
     hosts_l = hosts.split("+")
-    reqs = [grequests.get(bird_url(host, proto, "bird", command)) for host in hosts.split("+")]
+    reqs = [grequests.get(bird_url(host, proto, "bird", command), timeout=20) for host in hosts.split("+")]
     rets = grequests.map(reqs)
 
     for i in range(len(hosts_l)):
@@ -276,7 +284,7 @@ def detail(hosts, proto):
     errors = []
 
     hosts_l = hosts.split("+")
-    reqs = [grequests.get(bird_url(host, proto, "bird", command)) for host in hosts.split("+")]
+    reqs = [grequests.get(bird_url(host, proto, "bird", command), timeout=20) for host in hosts.split("+")]
     rets = grequests.map(reqs)
 
     for i in range(len(hosts_l)):
@@ -328,7 +336,7 @@ def traceroute(hosts, proto):
     infos = {}
 
     hosts_l = hosts.split("+")
-    reqs = [grequests.get(bird_url(host, proto, "traceroute", q)) for host in hosts.split("+")]
+    reqs = [grequests.get(bird_url(host, proto, "traceroute", q), timeout=20) for host in hosts.split("+")]
     rets = grequests.map(reqs)
 
     for i in range(len(hosts_l)):
@@ -400,12 +408,15 @@ def get_as_name(_as):
     if not _as.isdigit():
         return _as.strip()
 
-    name = get_asn_from_as(_as)[-1].replace(" ","\r",1)
+    asn = get_asn_from_as(_as)
+    name = ''
+    if asn:
+        name = asn[-1].replace(" ","\r",1)
     return "AS%s | %s" % (_as, name)
 
 
 def get_as_number_from_protocol_name(host, proto, protocol):
-    reqs = [grequests.get(bird_url(host, proto, "bird", command))]
+    reqs = [grequests.get(bird_url(host, proto, "bird", command), timeout=20)]
     ret = grequests.map(reqs)[0]
 
     if not ret:
@@ -497,6 +508,8 @@ def show_bgpmap():
             hop = False
             hop_label = ""
             for _as in asmap:
+                if _as is None:
+                    continue
                 if _as == previous_as:
                     prepend_as[_as] = prepend_as.get(_as, 1) + 1
                     continue
@@ -510,7 +523,6 @@ def show_bgpmap():
                         continue
                     else:
                         hop_label = ""
-
 
                 add_node(_as, fillcolor=(first and "#F5A9A9" or "white"))
                 if hop_label:
@@ -563,6 +575,7 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
         line = line.strip()
 
         expr = re.search(r'(.*)unicast\s+\[(\w+)\s+', line)
+        peer_protocol_name = ''
         if expr:
             if expr.group(1).strip():
                 net_dest = expr.group(1).strip()
@@ -672,7 +685,7 @@ def show_route(request_type, hosts, proto):
     errors = []
 
     hosts_l = hosts.split("+")
-    reqs = [grequests.get(bird_url(host, proto, "bird", command)) for host in hosts.split("+")]
+    reqs = [grequests.get(bird_url(host, proto, "bird", command), timeout=20) for host in hosts.split("+")]
     rets = grequests.map(reqs)
 
     for i in range(len(hosts_l)):
