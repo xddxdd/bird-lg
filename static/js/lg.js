@@ -8,9 +8,9 @@ function reload(){
 	loc = "/" + request_type + "/" + hosts + "/" + proto;
 	if (request_type != "summary" ){
 		if( request_args != undefined && request_args != ""){
-			loc = loc + "?q=" + escape(request_args);
+			loc = loc + "?q=" + encodeURIComponent(request_args);
 			change_url(loc)
-		} 
+		}
 	} else {
 		change_url(loc)
 	}
@@ -34,7 +34,7 @@ function update_view(){
 	} else {
 		$(".navbar li:last").html("");
 	}
-	
+
 	request_args = $(".request_args").val();
 	$(".request_args").focus();
 	$(".request_args").select();
@@ -45,7 +45,7 @@ $(function(){
 			change_url(this.href)
 		});
 		$(".modal .modal-footer .btn").click(function(){
-			$(".modal").modal('hide'); 
+			$(".modal").modal('hide');
 		});
 		$("a.whois").click(function (event){
 			event.preventDefault();
@@ -95,5 +95,3 @@ $(function(){
 	} );
 
 });
-
-
