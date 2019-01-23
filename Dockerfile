@@ -2,8 +2,7 @@ ARG THIS_ARCH_ALT=amd64
 FROM multiarch/alpine:${THIS_ARCH_ALT}-edge
 
 LABEL Lan Tian "lantian@lantian.pub"
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories \
-    && apk --no-cache add build-base git whois python2 py2-dnspython py2-gv py2-pip python2-dev py2-flask py2-werkzeug \
+RUN apk --no-cache add build-base git whois python2 py2-dnspython py2-gv py2-pip python2-dev py2-flask py2-werkzeug \
         uwsgi uwsgi-python uwsgi-gevent font-bitstream-type1 \
     && pip2 install --upgrade pydot grequests flask \
     && apk del --purge git build-base py2-pip python2-dev \
