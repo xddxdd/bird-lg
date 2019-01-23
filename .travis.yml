@@ -24,10 +24,9 @@ script:
     # Build image
     docker build \
       -t $DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_ARCH \
-      -f Dockerfile \
       --build-arg IMAGE_ARCH=$IMAGE_ARCH \
       --build-arg IMAGE_ARCH_ALT=$IMAGE_ARCH_ALT \
-      $PROGRAM
+      .
 
     # Tag image :{arch} and :{arch}-build{build number}
     docker tag $DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_ARCH $DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_ARCH-build$TRAVIS_BUILD_NUMBER
