@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
-	<title>{{config.DOMAIN|capitalize}} looking glass</title>
 	<head>
+		<title>{{config.WEBSITE_TITLE|default("Bird-LG / Looking Glass") }}</title>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width,initial-scale=1">
 		<link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/bootstrap-reboot.min.css') }}">
@@ -19,7 +19,6 @@
 				<a class="navbar-brand" href="/">{{config.DOMAIN|capitalize}}</a>
 				<ul class="nav nav-pills">
 					<li class="nav-item hosts mr-1"><a class="nav-link" id="{{all_hosts}}" href="#">all</a></li>
-
 					{% for host in config.PROXY %}
 					<li class="nav-item hosts mr-1"><a class="nav-link" id="{{host}}" href="#">{{host}}</a></li>
 					{% endfor %}
@@ -79,7 +78,6 @@
               href="/{{ [request_type, hosts, proto]|join("/") }}{% if request_args %}?q={{request_args}}{% endif %}">
                 {{hosts}}{% if not config.UNIFIED_DAEMON %}/{{proto}}{% endif %}: {{ commands_dict[request_type]|replace("...", request_args) }}
               </a>
-
 							{% endfor %}
 						</div>
 					</div>

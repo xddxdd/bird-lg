@@ -37,6 +37,7 @@ except ImportError:
 
 import json
 import random
+import argparse
 
 import grequests
 
@@ -46,9 +47,12 @@ from toolbox import mask_is_valid, ip_is_valid, ipv6_is_valid, ipv4_is_valid, re
 
 import pydot
 from flask import Flask, render_template, jsonify, redirect, session, request, abort, Response, Markup
+parser = argparse.ArgumentParser()
+parser.add_argument('-c', dest='config_file', help='path to config file', default='lg.cfg')
+args = parser.parse_args()
 
 app = Flask(__name__)
-app.config.from_pyfile('lg.cfg')
+app.config.from_pyfile(args.config_file)
 app.secret_key = app.config["SESSION_KEY"]
 app.debug = app.config["DEBUG"]
 
@@ -83,7 +87,7 @@ def add_links(text):
             ret_text.append(re.sub(r'(\d+)', r'<a href="/whois?q=\1" class="whois">\1</a>', line))
         else:
             line = re.sub(r'([a-zA-Z0-9\-]*\.([a-zA-Z]{2,3}){1,2})(\s|$)', r'<a href="/whois?q=\1" class="whois">\1</a>\3', line)
-            line = re.sub(r'AS(\d+)', r'<a href="/whois?q=\1" class="whois">AS\1</a>', line)
+            line = re.sub(r'(?<=\[)AS(\d+)', r'<a href="/whois?q=\1" class="whois">AS\1</a>', line)
             line = re.sub(r'(\d+\.\d+\.\d+\.\d+)', r'<a href="/whois?q=\1" class="whois">\1</a>', line)
             if len(request.path) >= 2:
                 hosts = "/".join(request.path.split("/")[2:])
@@ -140,9 +144,26 @@ def bird_url(host, proto, service, query):
     if not port:
         return None
     elif not path:
-        return None
-    else:
-        return "http://%s.%s:%s/%s?q=%s" % (host, app.config["DOMAIN"], port, path, quote(query))
+        return False, 'Proto "%s" invalid' % proto
+
+    url = "http://%s" % (host)
+    if "DOMAIN" in app.config:
+        url = "%s.%s" % (url, app.config["DOMAIN"])
+    url = "%s:%d/%s?" % (url, port, path)
+    if "SHARED_SECRET" in app.config:
+        url = "%ssecret=%s&" % (url, app.config["SHARED_SECRET"])
+    url = "%sq=%s" % (url, quote(query))
+
+    try:
+        f = urlopen(url)
+        resultat = f.read()
+        status = True                # retreive remote status
+    except IOError:
+        resultat = "Failed to retrieve URL for host %s" % host
+        app.logger.warning("Failed to retrieve URL for host %s: %s", host, url)
+        status = False
+
+    return status, resultat
 
 
 @app.context_processor
@@ -207,11 +228,11 @@ def whois():
         if m:
             query = query.groupdict()["domain"]
 
-    output = whois_command(query).replace("\n", "<br>")
+    output = whois_command(query)
     return jsonify(output=output, title=query)
 
 
-SUMMARY_UNWANTED_PROTOS = ["Kernel", "Static", "Device"]
+SUMMARY_UNWANTED_PROTOS = ["Kernel", "Static", "Device", "Direct"]
 
 @app.route("/summary/<hosts>")
 @app.route("/summary/<hosts>/<proto>")
@@ -252,16 +273,7 @@ def summary(hosts, proto="ipv4"):
                     props["table"] = split[2]
                     props["state"] = split[3]
                     props["since"] = split[4]
-                    if len(split) > 5:
-                        # if bird is configured for 'timeformat protocol iso long'
-                        # then the 5th column contains the time, rather than info
-                        match =	re.match(r'\d\d:\d\d:\d\d', split[5])
-                        if match:
-                            props["info"] = ' '.join(split[6:]) if len(split) > 6 else ""
-                        else:
-                            props["info"] = ' '.join(split[5:])
-                    else:
-                        props["info"] = ""
+                    props["info"] = ' '.join(split[5:]) if len(split) > 5 else ""
                     data.append(props)
                 else:
                     app.logger.warning("couldn't parse: %s", line)
@@ -482,13 +494,15 @@ def show_bgpmap():
             if "%s*" % label_without_star not in labels:
                 labels = [ kwargs["label"] ]  + [ l for l in labels if not l.startswith(label_without_star) ]
                 labels = sorted(labels, cmp=lambda x,y: x.endswith("*") and -1 or 1)
-
                 label = escape("\r".join(labels))
                 e.set_label(label)
         return edges[edge_tuple]
 
-    for host, asmaps in data.items():
-        add_node(host, label= "%s\r%s" % (host.title(), app.config["DOMAIN"].title()), shape="box", fillcolor="#F5A9A9")
+    for host, asmaps in data.iteritems():
+        if "DOMAIN" in app.config:
+            add_node(host, label= "%s\r%s" % (host.upper(), app.config["DOMAIN"].upper()), shape="box", fillcolor="#F5A9A9")
+        else:
+            add_node(host, label= "%s" % (host.upper()), shape="box", fillcolor="#F5A9A9")
 
         as_number = app.config["AS_NUMBER"].get(host, None)
         if as_number:
@@ -512,7 +526,13 @@ def show_bgpmap():
                 if _as is None:
                     continue
                 if _as == previous_as:
-                    prepend_as[_as] = prepend_as.get(_as, 1) + 1
+                    if not prepend_as.get(_as, None):
+                        prepend_as[_as] = {}
+                    if not prepend_as[_as].get(host, None):
+                        prepend_as[_as][host] = {}
+                    if not prepend_as[_as][host].get(asmap[0], None):
+                        prepend_as[_as][host][asmap[0]] = 1
+                    prepend_as[_as][host][asmap[0]] += 1
                     continue
 
                 if not hop:
@@ -525,7 +545,10 @@ def show_bgpmap():
                     else:
                         hop_label = ""
 
-                add_node(_as, fillcolor=(first and "#F5A9A9" or "white"))
+                if _as == asmap[-1]:
+                    add_node(_as, fillcolor="#F5A9A9", shape="box", )
+                else:
+                    add_node(_as, fillcolor=(first and "#F5A9A9" or "white"), )
                 if hop_label:
                     edge = add_edge(nodes[previous_as], nodes[_as], label=hop_label, fontsize="7")
                 else:
@@ -533,22 +556,19 @@ def show_bgpmap():
 
                 hop_label = ""
 
-                if first:
+                if first or _as == asmap[-1]:
                     edge.set_style("bold")
                     edge.set_color("red")
-                elif edge.get_color() != "red":
+                elif edge.get_style() != "bold":
                     edge.set_style("dashed")
                     edge.set_color(color)
 
                 previous_as = _as
             first = False
 
-    if previous_as:
-        node = add_node(previous_as)
-        node.set_shape("box")
-
     for _as in prepend_as:
-        graph.add_edge(pydot.Edge(*(_as, _as), label=" %dx" % prepend_as[_as], color="grey", fontcolor="grey"))
+        for n in set([ n for h, d in prepend_as[_as].iteritems() for p, n in d.iteritems() ]):
+            graph.add_edge(pydot.Edge(*(_as, _as), label=" %dx" % n, color="grey", fontcolor="grey"))
 
     fmt = request.args.get('fmt', 'png')
     #response = Response("<pre>" + graph.create_dot() + "</pre>")
@@ -572,6 +592,7 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
     path = None
     paths = []
     net_dest = None
+    peer_protocol_name = ""
     for line in text:
         line = line.strip()
 
@@ -582,14 +603,19 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
                 net_dest = expr.group(1).strip()
             peer_protocol_name = expr.group(2).strip()
 
-        expr2 = re.search(r'via\s+([0-9a-fA-F:\.]+)', line)
+        expr2 = re.search(r'(.*)via\s+([0-9a-fA-F:\.]+)\s+on\s+\S+(\s+\[(\w+)\s+)?', line)
         if expr2:
             if path:
                 path.append(net_dest)
                 paths.append(path)
                 path = None
 
-            peer_ip = expr2.group(1).strip()
+            if expr2.group(1).strip():
+                net_dest = expr2.group(1).strip()
+
+            peer_ip = expr2.group(2).strip()
+            if expr2.group(4):
+                peer_protocol_name = expr2.group(4).strip()
             # Check if via line is a internal route
             for rt_host, rt_ips in app.config["ROUTER_IP"].items():
                 # Special case for internal routing
@@ -608,11 +634,18 @@ def build_as_tree_from_raw_bird_ouput(host, proto, text):
                 paths.append(path)
                 path = None
 
+            if path is None:
+                path = [ expr3.group(2).strip() ]
+
             if expr3.group(1).strip():
                 net_dest = expr3.group(1).strip()
 
         if line.startswith("BGP.as_path:"):
-            path.extend(line.replace("BGP.as_path:", "").strip().split(" "))
+            ASes = line.replace("BGP.as_path:", "").strip().split(" ")
+            if path:
+                path.extend(ASes)
+            else:
+                path = ASes
 
     if path:
         path.append(net_dest)

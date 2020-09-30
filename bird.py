@@ -83,11 +83,11 @@ ERROR_CODES = {
 
 END_CODES = list(ERROR_CODES.keys()) + list(SUCCESS_CODES.keys())
 
-global bird_sockets 
+global bird_sockets
 bird_sockets = {}
 
 def BirdSocketSingleton(host, port):
-    global bird_sockets 
+    global bird_sockets
     s = bird_sockets.get((host,port), None)
     if not s:
         s = BirdSocket(host,port)
@@ -103,7 +103,7 @@ class BirdSocket:
         self.__sock = None
 
     def __connect(self):
-        if self.__sock:  return 
+        if self.__sock:  return
 
         if not self.__file:
             self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -125,10 +125,9 @@ class BirdSocket:
             self.__sock = None
 
     def cmd(self, cmd):
-        cmdle = cmd + "\n"
         try:
             self.__connect()
-            self.__sock.send(cmdle.encode('utf-8'))
+            self.__sock.send(cmd + "\n")
             data = self.__read()
             return data
         except socket.error:
@@ -142,7 +141,7 @@ class BirdSocket:
         lastline = ""
 
         while code not in END_CODES:
-            data = self.__sock.recv(BUFSIZE).decode('utf-8')
+            data = self.__sock.recv(BUFSIZE)
 
             lines = (lastline + data).split("\n")
             if len(data) == BUFSIZE:
@@ -156,15 +155,15 @@ class BirdSocket:
                     continue
                 elif code == "0000":
                     return True, parsed_string
-                elif code in list(SUCCESS_CODES.keys()):
+                elif code in SUCCESS_CODES.keys():
                     return True, SUCCESS_CODES.get(code)
-                elif code in list(ERROR_CODES.keys()):
+                elif code in ERROR_CODES.keys():
                     return False, ERROR_CODES.get(code)
                 elif code[0] in [ "1", "2"] :
                     parsed_string += line[5:] + "\n"
                 elif code[0] == " ":
                     parsed_string += line[1:] + "\n"
-                elif code[0] == "+": 
+                elif code[0] == "+":
                     parsed_string += line[1:]
                 else:
                     parsed_string += "<<<unparsable_string(%s)>>>\n"%line
@@ -172,4 +171,4 @@ class BirdSocket:
         return True, parsed_string
 
 
-__all__ = ['BirdSocketSingleton' , 'BirdSocket' ]
+__all__ = ['BirdSocketSingleton', 'BirdSocket']
